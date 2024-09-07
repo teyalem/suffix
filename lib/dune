@@ -1,3 +1,2 @@
-(executable
- (name suffix)
- (modes byte exe))
+(library
+ (name suffix))

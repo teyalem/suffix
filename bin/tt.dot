@@ -1,0 +1,16 @@
+digraph G {
+Root -> N0 [label=c]
+Root -> N1 [label=a]
+N1 -> N2 [label=te]
+Root -> N3 [label=r]
+N3 -> N4 [label=ate]
+Root -> N5 [label=o]
+N5 -> N6 [label=nate]
+N5 -> N7 [label=perate]
+Root -> N8 [label=nate]
+Root -> N9 [label=te]
+Root -> N10 [label=e]
+N10 -> N11 [label=rate]
+Root -> N12 [label=perate]
+}
+
