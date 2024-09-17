@@ -20,8 +20,11 @@ module Astr = struct
     |> String.of_seq
 
   let of_string str =
-    String.to_seq str
-    |> Seq.map (fun c -> Token.Char c)
+    let str =
+      String.to_seq str
+      |> Seq.map (fun c -> Token.Char c)
+    in
+    Seq.(append str (return @@ Token.End 1))
     |> Array.of_seq
 
   let of_strings ss =
@@ -47,9 +50,9 @@ end
 
 type node = {
   name : string;
+  at : int;
   mutable g : (word * node) list;
   mutable f : node option;
-  mutable at : int * int;
 }
 
 type t = {
@@ -59,8 +62,9 @@ type t = {
 
 (** helper functions *)
 
-let create_node name =
+let create_node name at =
   { name;
+    at;
     g = [];
     f = None; }
 
@@ -108,28 +112,33 @@ let export_dot { str; root } =
   let open Printf in
   let buf = Buffer.create 100 in
   let cnt = ref 0 in
+
   let rec aux name node =
-    List.iter (fun ((k, p), s) ->
-        let sub_name = sprintf "N%d" !cnt in
-        incr cnt;
-        let substr =
-          try Astr.sub_word str (k, p)
-          with _ -> sprintf "%d, %d" k p
-        in
-        bprintf buf "%s -> %s [label=%s]\n" name sub_name substr;
-        aux sub_name s)
-      node.g
+    if List.is_empty node.g then
+      bprintf buf "%s[label=\"%d\"]\n" name node.at
+    else
+      List.iter (fun ((k, p), s) ->
+          let sub_name = sprintf "N%d" !cnt in
+          incr cnt;
+          let substr =
+            try Astr.sub_word str (k, p)
+            with _ -> sprintf "%d, %d" k p
+          in
+          bprintf buf "%s -> %s [label=\"%s\"]\n" name sub_name substr;
+          aux sub_name s)
+        node.g
   in
+
   bprintf buf "digraph G {\n";
   aux root.name root;
   bprintf buf "}";
   Buffer.contents buf
 
 let suffix str =
-  let str_end = Astr.length str + 1 in
+  let str_end = Astr.length str - 1 in
 
-  let fal = create_node "fal" in
-  let root = create_node "Root" in
+  let fal = create_node "fal" 0 in
+  let root = create_node "Root" 0 in
   any_transition fal root;
   set_suffix root fal;
 
@@ -151,7 +160,7 @@ let suffix str =
       let (nk, np), ns = find_transition str s str.(k) in
       if c = str.(nk+p-k+1) then true, s
       else begin
-        let r = create_node "" in
+        let r = create_node "" ~-1 in
         update_node s (nk, nk+p-k) r;
         update_node r (nk+p-k+1, np) ns;
         false, r
@@ -160,12 +169,13 @@ let suffix str =
       mem_transition str s c, s
   in
 
+  (* TODO: refactor update *)
   let update s (k, i) =
     let oldr = ref root in
     let rec aux (s, k) (end_point, r) =
       if end_point then s, k
       else begin
-        update_node r (i, str_end) (create_node "");
+        update_node r (i, str_end) (create_node "" k);
         if !oldr != root then set_suffix !oldr r;
         oldr := r;
         let s, k = canonize (suffix_of s) (k, i-1) in
@@ -187,11 +197,10 @@ let suffix str =
   { str; root }
 
 let is_suffix { str; root } suf =
-  let len = String.length suf in
+  let suf = Astr.of_string suf in
   let rec aux s k =
-    if k = len then true
-    else if mem_transition str s (Char suf.[k]) then
-      let (nk, np), ns = find_transition str s (Char suf.[k]) in
+    if mem_transition str s suf.(k) then
+      let (nk, np), ns = find_transition str s suf.(k) in
       if List.is_empty ns.g then
         true
       else
@@ -201,7 +210,10 @@ let is_suffix { str; root } suf =
   in
   aux root 0
 
-let prune_invalid { str; root } =
+let lcs ss =
+  let l = List.length ss in
+  let str = Astr.of_strings ss in
+
   let ends =
     Astr.to_seq str
     |> Seq.mapi (fun i x -> i, x)
@@ -213,58 +225,78 @@ let prune_invalid { str; root } =
   in
   let ends = -1 :: ends in
 
-  let is_valid (k, p) =
-    let rec aux = function
-      | [] | [_] -> false
-      | a :: b :: ns ->
-        if a <= k && k <= b then
-          a <= p && p <= b
-        else
-          aux (b :: ns)
-    in
-    aux ends
-  in
-
-  let rec aux node =
-    node.g <-
-      List.filter_map (fun ((k, p), s) ->
-          if is_valid (k, p) then begin
-            aux s; 
-            Some ((k, p), s)
-          end
+  let prune_invalid { root; _ } =
+    let clamp (k, p) =
+      let rec aux = function
+        | [] | [_] -> failwith "clamp"
+        | a :: b :: ns ->
+          if a <= k && k <= b then
+            min p b
           else
-            None)
-        node.g
-  in
-  aux root;
-  { str; root }
+            aux (b :: ns)
+      in
+      aux ends
+    in
 
-let lcs ss =
+    let rec aux node =
+      node.g <-
+        List.filter_map (fun ((k, p), s) ->
+            let np = clamp (k, p) in
+            if np = p then begin
+              aux s;
+              Some ((k, p), s)
+            end
+            else if List.is_empty s.g then
+              Some ((k, np), s)
+            else
+              None)
+          node.g
+    in
+    aux root;
+    { str; root }
+  in
+
   let { str; root } =
-    Astr.of_strings ss
+    str
     |> suffix 
+    |> prune_invalid
   in
-
-  let _ = { str; root } |> prune_invalid in
-
-  print_endline @@ export_dot { str; root };
 
   let module S = Set.Make(Int) in
-  let all_i =
-    Seq.init (List.length ss) Fun.id
+  let every_str =
+    Seq.init l Fun.id
     |> S.of_seq
   in
 
-  let commons = ref [] in
-  let rec aux str (k, p) node =
-    if List.is_empty node.g then S.empty
+  let rec aux node word =
+    let partials, commons =
+    node.g
+    |> List.partition_map (fun ((k, p), s) ->
+        match str.(p) with
+        | Token.End i ->
+          Either.Left (S.singleton i)
+        | _ ->
+          aux s @@
+          word ^ Astr.sub_word str (k, p))
+    in
+
+    if List.is_empty commons then
+      let set =
+        List.fold_left S.union S.empty partials
+      in
+      if S.equal set every_str then
+        Either.Right [word]
+      else
+        Left set
     else
-        List.map (fun ((nk, np), ns) ->
-            let is = aux s in
-            match str.(p) with
-            | End i -> S.add i is
-            | _ -> is)
-          node.g
-        |> List.fold_left S.union S.empty
+      Right (List.concat commons)
   in
-  aux root;
+
+  aux root ""
+  |> Either.find_right
+  |> Option.map (List.fold_left (fun a s ->
+      if String.(length a >= length s) then
+        a
+      else
+        s)
+      "")

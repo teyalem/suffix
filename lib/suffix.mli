@@ -12,4 +12,4 @@ val suffix : Astr.t -> t
 
 val is_suffix : t -> string -> bool
 
-val lcs : string list -> string
+val lcs : string list -> string option
